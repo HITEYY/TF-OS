@@ -1,0 +1,8 @@
+singleton Theme Theme.qml
+Btn Btn.qml
+Card Card.qml
+Field Field.qml
+Toggle Toggle.qml
+Seg Seg.qml
+ListRow ListRow.qml
+PageHead PageHead.qml

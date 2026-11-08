@@ -4,332 +4,422 @@ import QtQuick.Layouts
 import QtQuick.VirtualKeyboard
 import QtMultimedia
 
-// 터치용: 크기는 화면 높이 기준(해상도 미확정). 페이지 2개: 홈 / 업데이트.
+// 토스 스타일 터치 UI. 크기는 화면 높이 기준(Theme.u = 높이/12) — 해상도 미확정이라.
+// 위젯/토큰은 같은 폴더의 Theme.qml, Btn.qml 등 (qmldir).
 ApplicationWindow {
     id: win
     visible: true
     visibility: Window.FullScreen
-    color: "#101418"
-    readonly property real u: height / 12   // 기본 단위
-    property var ota: ({ state: "idle", log: "", installed: "?", candidate: "", update: false })
-    property string err: ""
+    color: Theme.bg
+    font.family: Theme.family
+    readonly property real m: Theme.u * 0.5      // 화면 좌우 여백
+    Binding { target: Theme; property: "u"; value: win.height / 12 }
 
-    function call(method, path) {
+    // ---- 데몬 호출 ----
+    readonly property string api: "http://127.0.0.1:8765"
+    function http(method, path, body, done) {
         var x = new XMLHttpRequest()
         x.onreadystatechange = function () {
             if (x.readyState !== XMLHttpRequest.DONE) return
-            if (x.status === 0) { err = "OTA 데몬 연결 실패"; return }
-            err = ""
-            ota = JSON.parse(x.responseText)
+            done(x.status, x.status ? JSON.parse(x.responseText) : null)
         }
-        x.open(method, "http://127.0.0.1:8765" + path)
-        x.send()
+        x.open(method, api + path)
+        x.send(body ? JSON.stringify(body) : undefined)
     }
-    // 작업 중에만 폴링
-    Timer {
-        interval: 1500; repeat: true
-        running: win.ota.state === "checking" || win.ota.state === "upgrading"
-        onTriggered: win.call("GET", "/status")
-    }
+
+    // ---- OTA 상태 ----
+    property var ota: ({ state: "idle", log: "", installed: "", candidate: "", update: false })
+    property string lastAct: ""          // 사용자가 마지막에 시작한 작업: check | upgrade
+    property bool daemonDown: false
+    readonly property bool otaBusy: ota.state === "checking" || ota.state === "upgrading"
+    function otaPoll() { http("GET", "/status", null, function (st, r) { daemonDown = st !== 200; if (r) ota = r }) }
+    function otaDo(path, name) { lastAct = name; http("POST", path, null, function (st, r) { daemonDown = st === 0; if (r) ota = r }) }
+    Timer { interval: 1500; repeat: true; running: win.otaBusy; onTriggered: win.otaPoll() }
+
+    // ---- 재부팅 확인 시트 ----
+    property bool askReboot: false
+
+    // ---- 최초 설정 ----
     property int setupDone: -1   // -1 확인 전, 0 필요, 1 완료
     property string setupErr: ""
-    function postSetup(user, pw, ssh) {
-        var x = new XMLHttpRequest()
-        x.onreadystatechange = function () {
-            if (x.readyState !== XMLHttpRequest.DONE) return
-            if (x.status === 0) { setupErr = "데몬 연결 실패"; return }
-            var r = JSON.parse(x.responseText)
-            setupErr = r.error
-            if (r.done) setupDone = 1
-        }
-        x.open("POST", "http://127.0.0.1:8765/setup")
-        x.send(JSON.stringify({ user: user, password: pw, ssh: ssh }))
-    }
     Component.onCompleted: {
-        call("GET", "/status")
-        var x = new XMLHttpRequest()
-        x.onreadystatechange = function () {
-            if (x.readyState === XMLHttpRequest.DONE)
-                setupDone = (x.status === 200 && JSON.parse(x.responseText).done) ? 1 : (x.status === 200 ? 0 : -1)
-        }
-        x.open("GET", "http://127.0.0.1:8765/setup")
-        x.send()
+        otaPoll()
+        http("GET", "/setup", null, function (st, r) { setupDone = st === 200 ? (r.done ? 1 : 0) : -1 })
     }
 
-    component Tile: Button {
-        id: t
-        Layout.fillWidth: true; Layout.fillHeight: true
-        font.pixelSize: win.u * 0.7
-        contentItem: Text { text: t.text; font: t.font; color: "white"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; wrapMode: Text.Wrap }
-        background: Rectangle { radius: win.u * 0.3; color: !t.enabled ? "#2a3038" : t.down ? "#2f6fdb" : "#3b82f6" }
-    }
-
-    // 상단바
-    Rectangle {
-        id: bar
-        width: parent.width; height: win.u * 1.2; color: "#1a2027"
-        Text {
-            anchors.centerIn: parent; color: "white"; font.pixelSize: win.u * 0.6
-            text: "TF-OS"
-        }
-        Text {
-            anchors { right: parent.right; rightMargin: win.u * 0.4; verticalCenter: parent.verticalCenter }
-            color: "#9aa4b2"; font.pixelSize: win.u * 0.6
-            Timer { interval: 1000; running: true; repeat: true; triggeredOnStart: true
-                    onTriggered: parent.text = Qt.formatTime(new Date(), "hh:mm") }
-        }
+    // 상단: 시계만 (조용하게)
+    Label {
+        id: clock
+        anchors { top: parent.top; horizontalCenter: parent.horizontalCenter; topMargin: Theme.u * 0.2 }
+        font.pixelSize: Theme.u * 0.38; color: Theme.hint
+        Timer { interval: 1000; running: true; repeat: true; triggeredOnStart: true
+                onTriggered: clock.text = Qt.formatTime(new Date(), "hh:mm") }
     }
 
     StackView {
         id: stack
-        anchors { top: bar.bottom; bottom: parent.bottom; left: parent.left; right: parent.right; margins: win.u * 0.4 }
-        initialItem: GridLayout {
-            columns: 2; rowSpacing: win.u * 0.4; columnSpacing: win.u * 0.4
-            Tile { text: "Wi-Fi"; onClicked: stack.push(wifiPage) }
-            Tile { text: "하드웨어"; onClicked: stack.push(hwPage) }
-            Tile { text: "업데이트"; onClicked: stack.push(updatePage) }
-            Tile { text: "재부팅"; onClicked: win.call("POST", "/reboot") }
+        anchors { top: parent.top; topMargin: Theme.u * 0.6; bottom: parent.bottom; left: parent.left; right: parent.right
+                  leftMargin: win.m; rightMargin: win.m; bottomMargin: win.m }
+        initialItem: homePage
+        pushEnter: Transition { ParallelAnimation {
+            NumberAnimation { property: "x"; from: stack.width * 0.25; to: 0; duration: 260; easing.type: Easing.OutCubic }
+            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 260 } } }
+        pushExit: Transition { NumberAnimation { property: "opacity"; to: 0; duration: 160 } }
+        popEnter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 200 } }
+        popExit: Transition { ParallelAnimation {
+            NumberAnimation { property: "x"; from: 0; to: stack.width * 0.25; duration: 220; easing.type: Easing.OutCubic }
+            NumberAnimation { property: "opacity"; to: 0; duration: 220 } } }
+    }
+
+    // ================= 홈 =================
+    Component {
+        id: homePage
+        ColumnLayout {
+            spacing: Theme.u * 0.35
+            Label { Layout.topMargin: Theme.u * 0.6; text: "안녕하세요"; font.pixelSize: Theme.u * 0.9; font.bold: true; color: Theme.text }
+            Label { text: "TF-OS " + win.ota.installed; font.pixelSize: Theme.u * 0.4; color: Theme.sub }
+            Item { Layout.preferredHeight: Theme.u * 0.3 }
+            Card {
+                Layout.fillWidth: true
+                ListRow { Layout.fillWidth: true; title: "Wi-Fi"; sub: "네트워크 연결"; onClicked: stack.push(wifiPage) }
+                ListRow { Layout.fillWidth: true; title: "하드웨어"; sub: "스피커 · 카메라 · IC · NFC"; onClicked: stack.push(hwPage) }
+                ListRow { Layout.fillWidth: true; title: "업데이트"; sub: win.ota.update ? "새 버전이 있어요" : "소프트웨어 버전"
+                          trail: win.ota.update ? win.ota.candidate : win.ota.installed; onClicked: stack.push(updatePage) }
+            }
+            Card {
+                Layout.fillWidth: true
+                ListRow { Layout.fillWidth: true; title: "재부팅"; titleColor: Theme.red; chevron: false; onClicked: win.askReboot = true }
+            }
+            Item { Layout.fillHeight: true }
         }
     }
 
+    // ================= 업데이트 =================
     Component {
         id: updatePage
         ColumnLayout {
-            spacing: win.u * 0.3
-            Text { color: "white"; font.pixelSize: win.u * 0.6
-                   text: "현재 " + win.ota.installed + (win.ota.candidate ? "  /  최신 " + win.ota.candidate : "") }
-            Text { color: win.err || win.ota.state === "error" ? "#f87171" : "#9aa4b2"; font.pixelSize: win.u * 0.5
-                   text: win.err ? win.err : ({ idle: "", checking: "확인 중…", upgrading: "설치 중… 전원 끄지 마세요",
-                         done: win.ota.update ? "완료. 재부팅하면 적용됩니다" : "최신 버전입니다", error: "실패" })[win.ota.state] }
-            Flickable {   // 로그: 에러 때 원인 확인용
-                Layout.fillWidth: true; Layout.fillHeight: true; clip: true
-                contentHeight: logText.height
-                Text { id: logText; width: parent.width; color: "#6b7686"; wrapMode: Text.Wrap
-                       font.pixelSize: win.u * 0.3; text: win.ota.log }
+            id: up
+            spacing: Theme.u * 0.3
+            readonly property bool installed: win.ota.state === "done" && win.lastAct === "upgrade"
+            readonly property string title: win.daemonDown ? "연결할 수 없어요"
+                : win.ota.state === "checking" ? "확인하고 있어요"
+                : win.ota.state === "upgrading" ? "설치하고 있어요"
+                : win.ota.state === "error" ? "문제가 생겼어요"
+                : installed ? "설치가 끝났어요"
+                : win.ota.update ? "새 버전이 있어요"
+                : (win.ota.state === "done" || win.lastAct === "check") ? "최신 버전이에요"
+                : "업데이트를 확인해 볼까요?"
+            readonly property string sub: win.daemonDown ? "시스템 서비스에 연결하지 못했어요"
+                : win.ota.state === "upgrading" ? "전원을 끄지 마세요"
+                : installed ? "재부팅하면 새 버전이 적용돼요"
+                : win.ota.update ? win.ota.installed + " → " + win.ota.candidate
+                : "현재 버전 " + win.ota.installed
+
+            PageHead { Layout.fillWidth: true; title: up.title; sub: up.sub; onBackClicked: stack.pop() }
+            Item { Layout.fillHeight: true; Layout.fillWidth: true
+                // 오류일 때만 로그 노출 (원인 확인용)
+                Card {
+                    visible: win.ota.state === "error"
+                    anchors { left: parent.left; right: parent.right; top: parent.top; topMargin: Theme.u * 0.3 }
+                    pad: Theme.u * 0.3
+                    height: Math.min(parent.height - Theme.u * 0.3, lg.implicitHeight + 2 * pad)
+                    Flickable {
+                        Layout.fillWidth: true; Layout.fillHeight: true; clip: true; contentHeight: lg.height
+                        Label { id: lg; width: parent.width; wrapMode: Text.Wrap; color: Theme.sub
+                                font.pixelSize: Theme.u * 0.3; font.family: "monospace"; text: win.ota.log }
+                    }
+                }
             }
-            RowLayout {
-                Layout.fillWidth: true; Layout.preferredHeight: win.u * 1.6; spacing: win.u * 0.3
-                readonly property bool busy: win.ota.state === "checking" || win.ota.state === "upgrading"
-                Tile { text: "뒤로"; onClicked: stack.pop() }
-                Tile { text: "확인"; enabled: !parent.busy; onClicked: win.call("POST", "/check") }
-                Tile { text: "설치"; enabled: !parent.busy && win.ota.update; onClicked: win.call("POST", "/upgrade") }
-                Tile { text: "재부팅"; enabled: !parent.busy; onClicked: win.call("POST", "/reboot") }
+            Btn {
+                Layout.fillWidth: true
+                text: win.otaBusy ? "진행 중…" : up.installed ? "재부팅" : win.ota.update ? "설치하기" : win.ota.state === "error" ? "다시 시도" : "업데이트 확인"
+                enabled: !win.otaBusy && !win.daemonDown
+                onClicked: up.installed ? win.askReboot = true : win.ota.update ? win.otaDo("/upgrade", "upgrade") : win.otaDo("/check", "check")
             }
         }
     }
 
+    // ================= Wi-Fi =================
     Component {
         id: wifiPage
         ColumnLayout {
             id: wp
-            spacing: win.u * 0.25
+            spacing: Theme.u * 0.3
             property var nets: []
             property string cur: ""
             property string msg: ""
+            property bool bad: false
             property bool busy: false
             property var sel: null    // 선택한 망 (숨김망 추가면 hidden:true)
             readonly property bool hid: sel !== null && sel.hidden === true
             readonly property bool eap: hid ? fEap.checked : (sel !== null && sel.eap === true)
             readonly property string ssid: hid ? fSsid.text : (sel ? sel.ssid : "")
+            readonly property bool isCur: sel !== null && ssid === cur
+            readonly property bool isSaved: sel !== null && sel.saved === true
 
+            function say(t, isBad) { msg = t; bad = !!isBad }
             function req(method, body, done) {
                 busy = true
-                var x = new XMLHttpRequest()
-                x.onreadystatechange = function () {
-                    if (x.readyState !== XMLHttpRequest.DONE) return
+                win.http(method, "/wifi", body, function (st, r) {
                     busy = false
-                    if (x.status === 0) { msg = "데몬 연결 실패"; return }
-                    done(JSON.parse(x.responseText))
-                }
-                x.open(method, "http://127.0.0.1:8765/wifi")
-                x.send(body ? JSON.stringify(body) : undefined)
+                    if (st === 0) { say("데몬 연결 실패", true); return }
+                    done(r)
+                })
             }
             function scan() {
-                msg = "검색 중…"
+                say("주변 Wi-Fi를 찾는 중이에요")
                 req("GET", null, function (r) {
-                    msg = r.error; if (r.error) return
-                    nets = r.networks; cur = r.current
+                    if (r.error) { say(r.error, true); return }
+                    say(""); nets = r.networks; cur = r.current
                 })
             }
             function act(action) {
-                msg = ssid + " …"
+                say(ssid + " 연결 중이에요")
                 var b = { action: action, ssid: ssid }
                 if (action === "connect") {
                     b.password = fPw.text; b.hidden = hid
-                    if (eap) { b.eap = fMethod.currentText; b.phase2 = fPhase2.currentText; b.identity = fId.text }
+                    if (eap) { b.eap = fMethod.current; b.phase2 = fPhase2.current; b.identity = fId.text }
                 }
                 req("POST", b, function (r) {
-                    msg = r.ok ? "" : r.error
-                    if (r.ok) { sel = null; fPw.text = ""; fId.text = ""; fSsid.text = ""; scan() }
+                    if (!r.ok) { say(r.error, true); return }
+                    say(""); sel = null; fPw.text = ""; fId.text = ""; fSsid.text = ""; scan()
                 })
             }
             Component.onCompleted: scan()
 
-            Text { color: "white"; font.pixelSize: win.u * 0.55; text: cur ? "연결됨: " + cur : "연결 안 됨" }
-            Text { Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#9aa4b2"; font.pixelSize: win.u * 0.4; text: wp.msg }
-
-            // 선택한 망 설정 패널
-            ColumnLayout {
-                visible: wp.sel !== null
-                Layout.fillWidth: true; spacing: win.u * 0.15
-                Text { visible: !wp.hid; color: "white"; font.pixelSize: win.u * 0.5; text: wp.ssid }
-                TextField { id: fSsid; visible: wp.hid; Layout.fillWidth: true; font.pixelSize: win.u * 0.45; placeholderText: "SSID (숨김 망)" }
-                CheckBox { id: fEap; visible: wp.hid; text: "802.1X (기업망)"; font.pixelSize: win.u * 0.4 }
-                RowLayout {
-                    visible: wp.eap; Layout.fillWidth: true
-                    ComboBox { id: fMethod; model: ["peap", "ttls"]; font.pixelSize: win.u * 0.4 }
-                    ComboBox { id: fPhase2; model: ["mschapv2", "pap"]; font.pixelSize: win.u * 0.4 }
-                    TextField { id: fId; Layout.fillWidth: true; font.pixelSize: win.u * 0.45; placeholderText: "아이디"
-                                inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText }
-                }
-                TextField { id: fPw; visible: wp.eap || (wp.sel !== null && (wp.hid || wp.sel.secure))
-                            Layout.fillWidth: true; echoMode: TextInput.Password; font.pixelSize: win.u * 0.45
-                            placeholderText: wp.hid && !wp.eap ? "비밀번호 (열린 망이면 비움)" : "비밀번호" }
-                RowLayout {
-                    Layout.fillWidth: true; Layout.preferredHeight: win.u * 1.1; spacing: win.u * 0.2
-                    readonly property bool isCur: wp.sel !== null && wp.ssid === wp.cur
-                    readonly property bool isSaved: wp.sel !== null && wp.sel.saved === true
-                    Tile { text: "취소"; onClicked: wp.sel = null }
-                    Tile { text: "잊기"; visible: parent.isSaved; enabled: !wp.busy; onClicked: wp.act("forget") }
-                    Tile { text: "끊기"; visible: parent.isCur; enabled: !wp.busy; onClicked: wp.act("disconnect") }
-                    Tile { text: "저장된 설정으로 연결"; visible: parent.isSaved && !parent.isCur; enabled: !wp.busy; onClicked: wp.act("saved") }
-                    Tile {
-                        text: "연결"; visible: !parent.isCur
-                        enabled: !wp.busy && wp.ssid !== "" && (!wp.eap || (fId.text !== "" && fPw.text !== ""))
-                                 && (fPw.text === "" || fPw.text.length >= 8 || wp.eap)
-                        onClicked: wp.act("connect")
-                    }
-                }
+            PageHead {
+                Layout.fillWidth: true
+                title: wp.sel === null ? "Wi-Fi" : (wp.hid ? "숨김 망 추가" : wp.ssid)
+                sub: wp.sel === null ? (wp.cur ? wp.cur + "에 연결됨" : "연결된 망이 없어요") : ""
+                action: wp.sel === null ? "새로고침" : ""
+                onBackClicked: wp.sel === null ? stack.pop() : wp.sel = null
+                onActionClicked: if (!wp.busy) wp.scan()
             }
-            ListView {
+            Label { Layout.fillWidth: true; visible: wp.msg !== ""; wrapMode: Text.Wrap; text: wp.msg
+                    font.pixelSize: Theme.u * 0.36; color: wp.bad ? Theme.red : Theme.hint }
+
+            // --- 망 목록 ---
+            Card {
                 visible: wp.sel === null
-                Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: win.u * 0.15
-                model: wp.nets
-                delegate: Rectangle {
-                    width: ListView.view.width; height: win.u * 1.2; radius: win.u * 0.2
-                    color: modelData.ssid === wp.cur ? "#1f3a66" : "#1a2027"
-                    Text { anchors { left: parent.left; leftMargin: win.u * 0.3; verticalCenter: parent.verticalCenter }
-                           color: "white"; font.pixelSize: win.u * 0.5
-                           text: (modelData.secure ? "🔒 " : "") + modelData.ssid + (modelData.saved ? "  ★" : "") }
-                    Text { anchors { right: parent.right; rightMargin: win.u * 0.3; verticalCenter: parent.verticalCenter }
-                           color: "#9aa4b2"; font.pixelSize: win.u * 0.4; text: modelData.signal + "%" }
-                    MouseArea {
-                        anchors.fill: parent; enabled: !wp.busy
+                Layout.fillWidth: true; Layout.fillHeight: true
+                ListView {
+                    Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+                    model: wp.nets
+                    delegate: ListRow {
+                        width: ListView.view.width
+                        title: modelData.ssid
+                        sub: (modelData.saved ? "저장됨" : "") + (modelData.saved && modelData.secure ? " · " : "") + (modelData.secure ? (modelData.eap ? "기업망" : "보안") : (modelData.saved ? "" : "열린 망"))
+                        trail: modelData.ssid === wp.cur ? "연결됨" : ""
+                        strength: modelData.signal
+                        highlight: modelData.ssid === wp.cur
                         onClicked: {
-                            // 열린 미저장 망은 바로 연결, 나머지는 패널
-                            if (!modelData.secure && !modelData.saved && modelData.ssid !== wp.cur) { wp.sel = modelData; wp.act("connect") }
-                            else wp.sel = modelData
+                            if (wp.busy) return
+                            // 열린 미저장 망은 바로 연결, 나머지는 설정 화면
+                            wp.sel = modelData
+                            if (!modelData.secure && !modelData.saved && modelData.ssid !== wp.cur) wp.act("connect")
                         }
                     }
                 }
             }
+            Btn { visible: wp.sel === null; Layout.fillWidth: true; kind: "secondary"; text: "숨김 망 추가"
+                  onClicked: wp.sel = { hidden: true, secure: true, ssid: "" } }
+
+            // --- 선택한 망 설정 ---
+            Card {
+                visible: wp.sel !== null
+                Layout.fillWidth: true
+                pad: Theme.u * 0.3
+                ColumnLayout {
+                    Layout.fillWidth: true; spacing: Theme.u * 0.25
+                    Field { id: fSsid; visible: wp.hid; Layout.fillWidth: true; placeholderText: "SSID" }
+                    Toggle { id: fEap; visible: wp.hid; Layout.fillWidth: true; text: "기업망 (802.1X)" }
+                    ColumnLayout {
+                        visible: wp.eap; Layout.fillWidth: true; spacing: Theme.u * 0.15
+                        Seg { id: fMethod; options: ["peap", "ttls"] }
+                        Seg { id: fPhase2; options: ["mschapv2", "pap"] }
+                    }
+                    Field { id: fId; visible: wp.eap; Layout.fillWidth: true; placeholderText: "아이디"
+                            inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText }
+                    Field { id: fPw; Layout.fillWidth: true; echoMode: TextInput.Password
+                            visible: wp.eap || (wp.sel !== null && (wp.hid || wp.sel.secure))
+                            placeholderText: wp.hid && !wp.eap ? "비밀번호 (열린 망이면 비움)" : "비밀번호" }
+                    Label { visible: wp.isCur; text: "지금 연결된 망이에요"; font.pixelSize: Theme.u * 0.38; color: Theme.sub }
+                }
+            }
+            Item { Layout.fillHeight: true; visible: wp.sel !== null }
             RowLayout {
-                visible: wp.sel === null
-                Layout.fillWidth: true; Layout.preferredHeight: win.u * 1.6; spacing: win.u * 0.3
-                Tile { text: "뒤로"; onClicked: stack.pop() }
-                Tile { text: "다시 검색"; enabled: !wp.busy; onClicked: wp.scan() }
-                Tile { text: "숨김 망 추가"; onClicked: wp.sel = { hidden: true, secure: true, ssid: "" } }
+                visible: wp.sel !== null
+                Layout.fillWidth: true; spacing: Theme.u * 0.25
+                Btn { visible: wp.isSaved; kind: "danger"; text: "잊기"; enabled: !wp.busy; onClicked: wp.act("forget") }
+                Btn { visible: wp.isCur; Layout.fillWidth: true; kind: "danger"; text: "연결 끊기"; enabled: !wp.busy; onClicked: wp.act("disconnect") }
+                Btn { visible: wp.isSaved && !wp.isCur; Layout.fillWidth: true; kind: "secondary"; text: "저장된 설정으로 연결"; enabled: !wp.busy; onClicked: wp.act("saved") }
+                Btn {
+                    visible: !wp.isCur; Layout.fillWidth: true; text: "연결"
+                    enabled: !wp.busy && wp.ssid !== "" && (!wp.eap || (fId.text !== "" && fPw.text !== ""))
+                             && (fPw.text === "" || fPw.text.length >= 8 || wp.eap)
+                    onClicked: wp.act("connect")
+                }
             }
         }
     }
 
+    // ================= 하드웨어 =================
     Component {
         id: hwPage
         ColumnLayout {
             id: hp
-            spacing: win.u * 0.25
+            spacing: Theme.u * 0.3
             property var info: ({ camera: [], ic: "", nfc: "" })
             property var snd: ({ cards: "", control: "", volume: -1 })
             property string sndMsg: ""
             property bool busy: false
-            function sndCall(method, path, body, done) {
-                var x = new XMLHttpRequest()
-                x.onreadystatechange = function () {
-                    if (x.readyState === XMLHttpRequest.DONE) done(x.status, x.status ? JSON.parse(x.responseText) : null)
-                }
-                x.open(method, "http://127.0.0.1:8765" + path)
-                x.send(body ? JSON.stringify(body) : undefined)
-            }
-            function sndLoad() { sndCall("GET", "/audio", null, function (st, r) { if (st === 200) snd = r }) }
+            function sndLoad() { win.http("GET", "/audio", null, function (st, r) { if (st === 200) snd = r }) }
             function refresh() {
                 busy = true
-                var x = new XMLHttpRequest()
-                x.onreadystatechange = function () {
-                    if (x.readyState !== XMLHttpRequest.DONE) return
-                    busy = false
-                    if (x.status === 200) info = JSON.parse(x.responseText)
-                }
-                x.open("GET", "http://127.0.0.1:8765/hw")
-                x.send()
+                win.http("GET", "/hw", null, function (st, r) { busy = false; if (st === 200) info = r })
             }
             Component.onCompleted: { refresh(); sndLoad() }
 
-            // 스피커: ALSA 사운드 카드 필요 (코덱 DTS)
-            RowLayout {
-                Layout.fillWidth: true; spacing: win.u * 0.2
-                Text { color: "white"; font.pixelSize: win.u * 0.45; text: "스피커" }
-                Slider {
-                    id: vol; Layout.fillWidth: true; from: 0; to: 100; stepSize: 5
-                    enabled: hp.snd.volume >= 0
-                    value: hp.snd.volume >= 0 ? hp.snd.volume : 0
-                    // 손을 뗄 때만 적용 (드래그 중 매 값마다 호출 방지)
-                    onPressedChanged: if (!pressed) hp.sndCall("POST", "/audio", { volume: Math.round(value) }, function (st, r) { hp.sndMsg = st === 200 ? "" : (r ? r.error : "데몬 연결 실패") })
-                }
-                Text { color: "#9aa4b2"; font.pixelSize: win.u * 0.4; text: hp.snd.volume >= 0 ? Math.round(vol.value) + "%" : "없음" }
-                Tile { text: "테스트음"; Layout.fillWidth: false; Layout.preferredWidth: win.u * 3; Layout.preferredHeight: win.u * 1.1
-                       enabled: hp.snd.volume >= 0
-                       onClicked: hp.sndCall("POST", "/audio/test", null, function (st, r) { hp.sndMsg = st === 200 ? "" : (r ? r.error : "데몬 연결 실패") }) }
-            }
-            Text { visible: hp.sndMsg !== ""; color: "#f87171"; font.pixelSize: win.u * 0.35; text: hp.sndMsg }
+            PageHead { Layout.fillWidth: true; title: "하드웨어"; action: hp.busy ? "읽는 중…" : "다시 읽기"
+                       onBackClicked: stack.pop()
+                       onActionClicked: if (!hp.busy) { hp.refresh(); hp.sndLoad() } }
 
-            // 카메라: V4L2 장치가 있어야 함 (센서 DTS 필요)
-            Switch { id: camOn; text: "카메라 미리보기 (" + hp.info.camera.length + "개)"; font.pixelSize: win.u * 0.45
-                     enabled: hp.info.camera.length > 0 }
-            Item {
-                Layout.fillWidth: true; Layout.preferredHeight: camOn.checked ? win.u * 4.5 : 0; clip: true
-                VideoOutput { id: vo; anchors.fill: parent; visible: camOn.checked }
-                CaptureSession { camera: Camera { active: camOn.checked }; videoOutput: vo }
-            }
             Flickable {
-                Layout.fillWidth: true; Layout.fillHeight: true; clip: true; contentHeight: t.height
-                Text { id: t; width: parent.width; wrapMode: Text.Wrap; color: "#c9d1dc"
-                       font.pixelSize: win.u * 0.3; font.family: "monospace"
-                       text: "[사운드 카드" + (hp.snd.control ? ", 컨트롤 " + hp.snd.control : "") + "]\n" + (hp.snd.cards || "카드 없음")
-                             + "\n\n[IC 카드 리더 PC/SC]\n" + (hp.info.ic || "리더 없음")
-                             + "\n\n[NFC]\n" + (hp.info.nfc || "리더 없음")
-                             + "\n\n[MST]\n미지원: 표준 리눅스 인터페이스 없음 (전용 보안 MCU)" }
-            }
-            RowLayout {
-                Layout.fillWidth: true; Layout.preferredHeight: win.u * 1.6; spacing: win.u * 0.3
-                Tile { text: "뒤로"; onClicked: stack.pop() }
-                Tile { text: hp.busy ? "읽는 중…" : "IC·NFC 읽기"; enabled: !hp.busy; onClicked: hp.refresh() }
+                Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+                contentHeight: body.implicitHeight; boundsBehavior: Flickable.StopAtBounds
+                ColumnLayout {
+                    id: body
+                    width: parent.width; spacing: Theme.u * 0.3
+
+                    // 스피커: ALSA 사운드 카드 필요
+                    Card {
+                        Layout.fillWidth: true; pad: Theme.u * 0.35
+                        ColumnLayout {
+                            Layout.fillWidth: true; spacing: Theme.u * 0.2
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label { Layout.fillWidth: true; text: "스피커"; font.pixelSize: Theme.u * 0.46; font.bold: true; color: Theme.text }
+                                Label { text: hp.snd.volume >= 0 ? Math.round(vol.value) + "%" : "사운드 카드 없음"; font.pixelSize: Theme.u * 0.38; color: Theme.sub }
+                            }
+                            Slider {
+                                id: vol; Layout.fillWidth: true; from: 0; to: 100; stepSize: 5
+                                enabled: hp.snd.volume >= 0
+                                value: hp.snd.volume >= 0 ? hp.snd.volume : 0
+                                background: Rectangle {
+                                    x: vol.leftPadding; y: vol.topPadding + vol.availableHeight / 2 - height / 2
+                                    width: vol.availableWidth; height: Theme.u * 0.14; radius: height / 2; color: Theme.off
+                                    Rectangle { width: vol.visualPosition * parent.width; height: parent.height; radius: height / 2
+                                                color: vol.enabled ? Theme.blue : Theme.offText }
+                                }
+                                handle: Rectangle {
+                                    x: vol.leftPadding + vol.visualPosition * (vol.availableWidth - width)
+                                    y: vol.topPadding + vol.availableHeight / 2 - height / 2
+                                    width: Theme.u * 0.55; height: width; radius: width / 2; color: "white"
+                                    border.width: 2; border.color: vol.enabled ? Theme.blue : Theme.offText
+                                    scale: vol.pressed ? 1.15 : 1
+                                    Behavior on scale { NumberAnimation { duration: 100 } }
+                                }
+                                // 손을 뗄 때만 적용 (드래그 중 매 값마다 호출 방지)
+                                onPressedChanged: if (!pressed) win.http("POST", "/audio", { volume: Math.round(value) },
+                                    function (st, r) { hp.sndMsg = st === 200 ? "" : (r ? r.error : "데몬 연결 실패") })
+                            }
+                            Label { visible: hp.sndMsg !== ""; text: hp.sndMsg; font.pixelSize: Theme.u * 0.34; color: Theme.red }
+                            Btn { Layout.fillWidth: true; kind: "secondary"; text: "테스트음 재생"; enabled: hp.snd.volume >= 0
+                                  onClicked: win.http("POST", "/audio/test", null, function (st, r) { hp.sndMsg = st === 200 ? "" : (r ? r.error : "데몬 연결 실패") }) }
+                        }
+                    }
+
+                    // 카메라: V4L2 장치 필요
+                    Card {
+                        Layout.fillWidth: true; pad: Theme.u * 0.35
+                        ColumnLayout {
+                            Layout.fillWidth: true; spacing: Theme.u * 0.2
+                            Toggle { id: camOn; Layout.fillWidth: true; text: "카메라 (" + hp.info.camera.length + "개)"; enabled: hp.info.camera.length > 0 }
+                            Rectangle {
+                                visible: camOn.checked
+                                Layout.fillWidth: true; Layout.preferredHeight: Theme.u * 4.5; radius: Theme.radius; color: "black"; clip: true
+                                VideoOutput { id: vo; anchors.fill: parent }
+                                CaptureSession {
+                                    camera: Camera { active: camOn.checked }
+                                    videoOutput: vo
+                                }
+                            }
+                        }
+                    }
+
+                    // 장치 상태
+                    Card {
+                        Layout.fillWidth: true; pad: Theme.u * 0.35
+                        Label { Layout.fillWidth: true; wrapMode: Text.Wrap; color: Theme.sub
+                                font.pixelSize: Theme.u * 0.3; font.family: "monospace"
+                                text: "[사운드 카드" + (hp.snd.control ? ", " + hp.snd.control : "") + "]\n" + (hp.snd.cards || "없음")
+                                      + "\n\n[IC 리더 PC/SC]\n" + (hp.info.ic || "없음")
+                                      + "\n\n[NFC]\n" + (hp.info.nfc || "없음")
+                                      + "\n\n[MST]\n미지원 (전용 보안 MCU, 표준 리눅스 인터페이스 없음)" }
+                    }
+                }
             }
         }
     }
 
-    // 최초 설정: 사용자 생성 + SSH. 완료 전까지 다른 화면 가림.
+    // ================= 재부팅 확인 시트 =================
+    Rectangle {
+        anchors.fill: parent; color: "#80000000"; z: 50
+        visible: opacity > 0; opacity: win.askReboot ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: 150 } }
+        MouseArea { anchors.fill: parent; onClicked: win.askReboot = false }
+        Rectangle {
+            width: parent.width; height: sheet.implicitHeight + Theme.u * 0.9
+            y: win.askReboot ? parent.height - height : parent.height
+            Behavior on y { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+            color: Theme.card; radius: Theme.u * 0.5
+            MouseArea { anchors.fill: parent }   // 시트 안 터치가 스크림으로 새지 않게
+            ColumnLayout {
+                id: sheet
+                anchors { left: parent.left; right: parent.right; top: parent.top; margins: win.m; topMargin: Theme.u * 0.5 }
+                spacing: Theme.u * 0.3
+                Label { text: "재부팅할까요?"; font.pixelSize: Theme.u * 0.65; font.bold: true; color: Theme.text }
+                Label { text: "저장하지 않은 작업은 사라져요"; font.pixelSize: Theme.u * 0.4; color: Theme.sub }
+                RowLayout {
+                    Layout.fillWidth: true; Layout.topMargin: Theme.u * 0.2; spacing: Theme.u * 0.25
+                    Btn { Layout.fillWidth: true; kind: "secondary"; text: "취소"; onClicked: win.askReboot = false }
+                    Btn { Layout.fillWidth: true; text: "재부팅"
+                          onClicked: { win.askReboot = false; win.http("POST", "/reboot", null, function () {}) } }
+                }
+            }
+        }
+    }
+
+    // ================= 최초 설정 (완료 전까지 전체 가림) =================
     Rectangle {
         id: setup
+        z: 60
         visible: win.setupDone === 0
-        anchors.fill: parent; color: "#101418"
+        anchors.fill: parent; color: Theme.bg
         ColumnLayout {
-            x: win.u * 0.5; width: parent.width - win.u
-            y: Math.max(win.u * 0.3, (kb.active ? kb.y : parent.height) - height - win.u * 0.3)
-            spacing: win.u * 0.25
-            Text { text: "처음 설정"; color: "white"; font.pixelSize: win.u * 0.8 }
-            TextField { id: fUser; Layout.fillWidth: true; placeholderText: "사용자 이름 (영문 소문자)"
-                        font.pixelSize: win.u * 0.5; inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText | Qt.ImhLowercaseOnly }
-            TextField { id: fPw; Layout.fillWidth: true; placeholderText: "비밀번호 (8자 이상)"
-                        font.pixelSize: win.u * 0.5; echoMode: TextInput.Password }
-            TextField { id: fPw2; Layout.fillWidth: true; placeholderText: "비밀번호 확인"
-                        font.pixelSize: win.u * 0.5; echoMode: TextInput.Password }
-            CheckBox { id: fSsh; checked: true; text: "SSH 켜기"; font.pixelSize: win.u * 0.5 }
-            Text { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: win.u * 0.4; color: "#f87171"
-                   text: fPw.text !== fPw2.text && fPw2.text !== "" ? "비밀번호가 다릅니다" : win.setupErr }
-            Tile {
-                Layout.fillHeight: false; Layout.preferredHeight: win.u * 1.3
-                text: "만들기"; enabled: fUser.text !== "" && fPw.text.length >= 8 && fPw.text === fPw2.text
-                onClicked: win.postSetup(fUser.text, fPw.text, fSsh.checked)
+            x: win.m; width: parent.width - 2 * win.m
+            y: Math.max(Theme.u * 0.6, (kb.active ? kb.y : parent.height - win.m) - height - Theme.u * 0.2)
+            spacing: Theme.u * 0.25
+            Label { text: "처음 오셨네요"; font.pixelSize: Theme.u * 0.85; font.bold: true; color: Theme.text }
+            Label { text: "사용할 계정을 만들어요"; font.pixelSize: Theme.u * 0.42; color: Theme.sub }
+            Item { Layout.preferredHeight: Theme.u * 0.1 }
+            Field { id: sUser; Layout.fillWidth: true; placeholderText: "사용자 이름 (영문 소문자)"
+                    inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText | Qt.ImhLowercaseOnly }
+            Field { id: sPw; Layout.fillWidth: true; placeholderText: "비밀번호 (8자 이상)"; echoMode: TextInput.Password }
+            Field { id: sPw2; Layout.fillWidth: true; placeholderText: "비밀번호 확인"; echoMode: TextInput.Password }
+            Toggle { id: sSsh; Layout.fillWidth: true; checked: true; text: "SSH 켜기" }
+            Label { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Theme.u * 0.36; color: Theme.red
+                    visible: text !== ""
+                    text: sPw.text !== sPw2.text && sPw2.text !== "" ? "비밀번호가 달라요" : win.setupErr }
+            Btn {
+                Layout.fillWidth: true; text: "시작하기"
+                enabled: sUser.text !== "" && sPw.text.length >= 8 && sPw.text === sPw2.text
+                onClicked: win.http("POST", "/setup", { user: sUser.text, password: sPw.text, ssh: sSsh.checked },
+                    function (st, r) {
+                        if (st === 0) { win.setupErr = "데몬 연결 실패"; return }
+                        win.setupErr = r.error
+                        if (r.done) win.setupDone = 1
+                    })
             }
         }
     }

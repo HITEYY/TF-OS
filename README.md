@@ -21,7 +21,7 @@ tests/test_ota.py                          데몬 로직 점검
 ```
 
 ## 터치 GUI / OTA
-- UI: `tf-ui.service` 가 `qml6 main.qml` 을 eglfs(KMS)로 전체화면 실행. 홈 / 업데이트 화면. 방향·터치 보정은 `/etc/tf-os/ui.env`.
+- UI: `tf-ui.service` 가 `qml6 main.qml` 을 eglfs(KMS)로 전체화면 실행. 토스 앱 스타일(회색 바탕 + 흰 카드 + 파란 포인트, 큰 굵은 제목, 하단 전폭 버튼, 시트형 확인창). 디자인 토큰은 `ui/Theme.qml`, 공통 위젯은 `ui/*.qml`(qmldir) — 색/모서리/간격은 Theme 한 곳에서 조정. 토스 로고·에셋은 쓰지 않음. 방향·터치 보정은 `/etc/tf-os/ui.env`.
 - OTA: `tf-ota.service`(127.0.0.1:8765, python 표준 라이브러리)가 tf-os 전용 APT 저장소만 갱신하고 `tf-os-app` 만 업그레이드. UI 가 호출. 적용은 재부팅 후. 커널/DTB 는 apt hold (Armbian 저장소 커널엔 tossfront DTB 없음).
 - 배포 절차
   ```sh
