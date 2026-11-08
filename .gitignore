@@ -1,0 +1,9 @@
+# Armbian 빌드 트리 (build.sh가 clone)
+/build/
+# 기기 백업/추출물: 펌웨어 공유 금지
+/backup/
+/vendor-dt/
+*.img
+*.img.xz
+*.bin
+__pycache__/

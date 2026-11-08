@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Toss Front 1/1.5 (SUNMI, RK3399) - bring-up DTS
+ *
+ * 목표: 시리얼 콘솔 + eMMC 부팅까지만. 나머지는 벤더 DTB(tools/extract_dtb.py)를
+ * 보고 채운다.
+ *
+ * - OPP 없는 rk3399-base.dtsi 사용: PMIC/cpu-supply 를 모르는 상태에서 DVFS 하면
+ *   전압 안 올리고 클럭만 올려 죽을 수 있음. 부트로더가 잡은 전압/클럭 그대로 감.
+ * - PMIC(RK808 추정), 디스플레이, 터치, USB, Wi-Fi, 프린터/카드리더는 TODO.
+ */
+
+/dts-v1/;
+#include "rk3399-base.dtsi"
+
+/ {
+	model = "Toss Front (RK3399)";
+	compatible = "sunmi,tossfront", "rockchip,rk3399";
+
+	aliases {
+		mmc0 = &sdhci;
+	};
+
+	chosen {
+		stdout-path = "serial2:1500000n8";
+	};
+};
+
+&emmc_phy {
+	status = "okay";
+};
+
+/* HS200/HS400 은 vqmmc(1.8V) 레일 확인 후 활성화 */
+&sdhci {
+	bus-width = <8>;
+	cap-mmc-highspeed;
+	non-removable;
+	status = "okay";
+};
+
+&uart2 {
+	status = "okay";
+};
