@@ -1,28 +1,328 @@
 // SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 /*
- * Toss Front 1/1.5 (SUNMI, RK3399) - bring-up DTS
+ * Toss Front 1/1.5세대 (SUNMI, Rockchip RK3399)
  *
- * 목표: 시리얼 콘솔 + eMMC 부팅까지만. 나머지는 벤더 DTB(tools/extract_dtb.py)를
- * 보고 채운다.
+ * 벤더 DTB(TF-Flasher 백업 boot.img)를 디컴파일해 확인한 하드웨어:
+ *   - PMIC: RK808 (i2c0 0x1b) + FAN53555 x2 (i2c0 0x40 vdd_cpu_b, 0x41 vdd_gpu)
+ *   - eMMC: sdhci 8bit HS400 (벤더는 hs400-1_8v + enhanced-strobe)
+ *   - SD:   dwmmc fe320000 4bit, vmmc/vqmmc = vcc_sd (RK808 LDO4)
+ *   - WiFi: dwmmc fe310000 SDIO 4bit, AP6354(BCM4354), pwrseq reset = gpio0 PB2
+ *   - 터치: GSL3673 (i2c1 0x40, IRQ gpio1 PC4, RST gpio1 PA1)
+ *   - 백라이트: pwm0 (40us 주기, 0..255 레벨, 기본 200)
+ *   - 패널: MIPI-DSI0, 벤더 DTB에 8종 변형. 이 파일은 800x1280/3lane(M13) 기본
+ *   - 오디오: es8316 / 게이지: cw201x / 카메라: ov5675 / 4G: 별도 플랫폼
  *
- * - OPP 없는 rk3399-base.dtsi 사용: PMIC/cpu-supply 를 모르는 상태에서 DVFS 하면
- *   전압 안 올리고 클럭만 올려 죽을 수 있음. 부트로더가 잡은 전압/클럭 그대로 감.
- * - PMIC(RK808 추정), 디스플레이, 터치, USB, Wi-Fi, 프린터/카드리더는 TODO.
+ * 설계 원칙:
+ *   - OPP(cpu/gpu dvfs) 테이블은 넣지 않는다. 벤더 DTB의 OPP는 검증되지 않았고,
+ *     전압이 틀리면 부팅 중 죽는다. U-Boot가 잡은 클럭/전압으로 동작시킨다.
+ *   - 디스플레이는 status="disabled". 메인라인 커널에 이 패널(벤더 init-sequence
+ *     방식)을 구동하는 드라이버가 없어서, 켜두면 DSI만 초기화하고 화면은 안 나온다.
+ *     타이밍/시퀀스는 아래에 그대로 옮겨놨으니 드라이버를 붙이면 바로 쓸 수 있다.
  */
 
 /dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/pinctrl/rockchip.h>
 #include "rk3399-base.dtsi"
 
 / {
-	model = "Toss Front (RK3399)";
+	model = "Toss Front (SUNMI, RK3399)";
 	compatible = "sunmi,tossfront", "rockchip,rk3399";
 
 	aliases {
 		mmc0 = &sdhci;
+		mmc1 = &sdio0;
+		mmc2 = &sdmmc;
+		serial2 = &uart2;
 	};
 
 	chosen {
 		stdout-path = "serial2:1500000n8";
+	};
+
+	memory@0 {
+		device_type = "memory";
+		reg = <0x0 0x00000000 0x0 0x80000000>; /* 2 GiB */
+	};
+
+	vcc_sys: vcc-sys {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc_sys";
+		regulator-min-microvolt = <12000000>;
+		regulator-max-microvolt = <12000000>;
+	};
+
+	vcc3v3_sys: vcc3v3-sys {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc3v3_sys";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		vin-supply = <&vcc_sys>;
+	};
+
+	vcc1v8_s3: vcc1v8-s3 {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc1v8_s3";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		vin-supply = <&vcc3v3_sys>;
+	};
+
+	vcc5v0_host: vcc5v0-host {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc5v0_host";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		vin-supply = <&vcc_sys>;
+	};
+
+	backlight: backlight {
+		compatible = "pwm-backlight";
+		/* 벤더: pwms = <&pwm0 0 0x9c40 0> — 40000ns(~25kHz) */
+		pwms = <&pwm0 0 40000 0>;
+		brightness-levels = <0 4 8 12 16 20 24 28 32 36 40 44 48 52 56 60
+				     64 68 72 76 80 84 88 92 96 100 104 108 112 116 120 124
+				     128 132 136 140 144 148 152 156 160 164 168 172 176 180 184 188
+				     192 196 200 204 208 212 216 220 224 228 232 236 240 244 248 255>;
+		default-brightness-level = <48>;
+		status = "okay";
+	};
+};
+
+&i2c0 {
+	status = "okay";
+	clock-frequency = <400000>;
+
+	rk808: pmic@1b {
+		compatible = "rockchip,rk808";
+		reg = <0x1b>;
+		interrupt-parent = <&gpio1>;
+		interrupts = <RK_PB1 IRQ_TYPE_LEVEL_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&pmic_int_l>;
+		rockchip,system-power-controller;
+		wakeup-source;
+		#clock-cells = <1>;
+		clock-output-names = "rk808-clkout1", "rk808-clkout2";
+
+		vcc1-supply = <&vcc3v3_sys>;
+		vcc2-supply = <&vcc3v3_sys>;
+		vcc3-supply = <&vcc3v3_sys>;
+		vcc4-supply = <&vcc3v3_sys>;
+		vcc6-supply = <&vcc3v3_sys>;
+		vcc7-supply = <&vcc3v3_sys>;
+		vcc8-supply = <&vcc3v3_sys>;
+		vcc9-supply = <&vcc3v3_sys>;
+		vcc10-supply = <&vcc3v3_sys>;
+		vcc11-supply = <&vcc3v3_sys>;
+		vcc12-supply = <&vcc3v3_sys>;
+		vddio-supply = <&vcc1v8_s3>;
+
+		regulators {
+			vdd_center: DCDC_REG1 {
+				regulator-name = "vdd_center";
+				regulator-always-on;
+				regulator-boot-on;
+				regulator-min-microvolt = <750000>;
+				regulator-max-microvolt = <1350000>;
+				regulator-ramp-delay = <6001>;
+				regulator-state-mem {
+					regulator-off-in-suspend;
+				};
+			};
+
+			vdd_cpu_l: DCDC_REG2 {
+				regulator-name = "vdd_cpu_l";
+				regulator-always-on;
+				regulator-boot-on;
+				regulator-min-microvolt = <750000>;
+				regulator-max-microvolt = <1350000>;
+				regulator-ramp-delay = <6001>;
+				regulator-state-mem {
+					regulator-off-in-suspend;
+				};
+			};
+
+			vcc_ddr: DCDC_REG3 {
+				regulator-name = "vcc_ddr";
+				regulator-always-on;
+				regulator-boot-on;
+				regulator-state-mem {
+					regulator-on-in-suspend;
+				};
+			};
+
+			vcc_1v8: DCDC_REG4 {
+				regulator-name = "vcc_1v8";
+				regulator-always-on;
+				regulator-boot-on;
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+				regulator-state-mem {
+					regulator-on-in-suspend;
+					regulator-suspend-microvolt = <1800000>;
+				};
+			};
+
+			vcc1v8_dvp: LDO_REG1 {
+				regulator-name = "vcc1v8_dvp";
+				regulator-always-on;
+				regulator-boot-on;
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+				regulator-state-mem {
+					regulator-off-in-suspend;
+				};
+			};
+
+			vcc3v0_tp: LDO_REG2 {
+				regulator-name = "vcc3v0_tp";
+				regulator-always-on;
+				regulator-boot-on;
+				regulator-min-microvolt = <3000000>;
+				regulator-max-microvolt = <3000000>;
+				regulator-state-mem {
+					regulator-off-in-suspend;
+				};
+			};
+
+			vcc1v8_pmu: LDO_REG3 {
+				regulator-name = "vcc1v8_pmu";
+				regulator-always-on;
+				regulator-boot-on;
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+				regulator-state-mem {
+					regulator-on-in-suspend;
+					regulator-suspend-microvolt = <1800000>;
+				};
+			};
+
+			vcc_sd: LDO_REG4 {
+				regulator-name = "vcc_sd";
+				regulator-always-on;
+				regulator-boot-on;
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <3000000>;
+				regulator-state-mem {
+					regulator-on-in-suspend;
+					regulator-suspend-microvolt = <3000000>;
+				};
+			};
+
+			vcca3v0_codec: LDO_REG5 {
+				regulator-name = "vcca3v0_codec";
+				regulator-always-on;
+				regulator-boot-on;
+				regulator-min-microvolt = <3000000>;
+				regulator-max-microvolt = <3000000>;
+				regulator-state-mem {
+					regulator-off-in-suspend;
+				};
+			};
+
+			vcc_1v5: LDO_REG6 {
+				regulator-name = "vcc_1v5";
+				regulator-always-on;
+				regulator-boot-on;
+				regulator-min-microvolt = <1500000>;
+				regulator-max-microvolt = <1500000>;
+				regulator-state-mem {
+					regulator-off-in-suspend;
+				};
+			};
+
+			vcca1v8_codec: LDO_REG7 {
+				regulator-name = "vcca1v8_codec";
+				regulator-always-on;
+				regulator-boot-on;
+				regulator-min-microvolt = <900000>;
+				regulator-max-microvolt = <900000>;
+				regulator-state-mem {
+					regulator-off-in-suspend;
+				};
+			};
+
+			vcc_3v0: LDO_REG8 {
+				regulator-name = "vcc_3v0";
+				regulator-always-on;
+				regulator-boot-on;
+				regulator-min-microvolt = <3000000>;
+				regulator-max-microvolt = <3000000>;
+				regulator-state-mem {
+					regulator-off-in-suspend;
+				};
+			};
+
+			vcc3v3_s3: SWITCH_REG1 {
+				regulator-name = "vcc3v3_s3";
+				regulator-always-on;
+				regulator-boot-on;
+				regulator-state-mem {
+					regulator-on-in-suspend;
+				};
+			};
+
+			vcc3v3_s0: SWITCH_REG2 {
+				regulator-name = "vcc3v3_s0";
+				regulator-always-on;
+				regulator-boot-on;
+				regulator-state-mem {
+					regulator-off-in-suspend;
+				};
+			};
+		};
+	};
+
+	/* 벤더 DTB: fan53555 @0x40 = vdd_cpu_b, @0x41 = vdd_gpu (712500..1500000) */
+	vdd_cpu_b: regulator@40 {
+		compatible = "fcs,fan53555";
+		reg = <0x40>;
+		regulator-name = "vdd_cpu_b";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <712500>;
+		regulator-max-microvolt = <1500000>;
+		regulator-ramp-delay = <1000>;
+		vin-supply = <&vcc3v3_sys>;
+	};
+
+	vdd_gpu: regulator@41 {
+		compatible = "fcs,fan53555";
+		reg = <0x41>;
+		regulator-name = "vdd_gpu";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <712500>;
+		regulator-max-microvolt = <1500000>;
+		regulator-ramp-delay = <1000>;
+		vin-supply = <&vcc3v3_sys>;
+	};
+};
+
+/* 터치: GSL3673 — 벤더 i2c1 0x40, IRQ gpio1 PC4, RST gpio1 PA1, 1536x2048 좌표계 */
+&i2c1 {
+	status = "okay";
+	clock-frequency = <400000>;
+
+	touchscreen@40 {
+		compatible = "silead,gsl3673";
+		reg = <0x40>;
+		interrupt-parent = <&gpio1>;
+		interrupts = <RK_PC4 IRQ_TYPE_EDGE_FALLING>;
+		reset-gpios = <&gpio1 RK_PA1 GPIO_ACTIVE_HIGH>;
+		/* 벤더: vcc3v0_tp (RK808 LDO2) */
+		power-supply = <&vcc3v0_tp>;
+		silead,max-fingers = <5>;
+		status = "disabled"; /* 메인라인 silead 드라이버에 GSL3673 항목 없음 */
 	};
 };
 
@@ -30,14 +330,187 @@
 	status = "okay";
 };
 
-/* HS200/HS400 은 vqmmc(1.8V) 레일 확인 후 활성화 */
+/*
+ * eMMC: 벤더는 HS400(1.8V, enhanced-strobe). 검증 전에는 HS200으로 시작한다.
+ * HS400으로 올릴 때는 아래 두 줄의 주석을 바꾸고 vqmmc-phy-supply(vcc_1v8)를 확인할 것.
+ */
 &sdhci {
 	bus-width = <8>;
-	cap-mmc-highspeed;
+	mmc-hs200-1_8v;
+	/* mmc-hs400-1_8v; */
+	/* mmc-hs400-enhanced-strobe; */
 	non-removable;
 	status = "okay";
 };
 
+/* SD Card (dwmmc fe320000). 벤더: vmmc/vqmmc = vcc_sd */
+&sdmmc {
+	bus-width = <4>;
+	cap-sd-highspeed;
+	cap-mmc-highspeed;
+	disable-wp;
+	vmmc-supply = <&vcc_sd>;
+	vqmmc-supply = <&vcc_sd>;
+	status = "okay";
+};
+
+/* WiFi AP6354 (BCM4354) — SDIO. 벤더 pwrseq reset = gpio0 PB2 (active low) */
+&sdio0 {
+	bus-width = <4>;
+	cap-sdio-irq;
+	disable-wp;
+	keep-power-in-suspend;
+	mmc-pwrseq = <&sdio_pwrseq>;
+	non-removable;
+	sd-uhs-sdr104;
+	status = "okay";
+};
+
+/ {
+	sdio_pwrseq: sdio-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		clock-names = "ext_clock";
+		pinctrl-names = "default";
+		pinctrl-0 = <&wifi_enable_h>;
+		reset-gpios = <&gpio0 RK_PB2 GPIO_ACTIVE_LOW>;
+	};
+};
+
+&pinctrl {
+	pmic {
+		pmic_int_l: pmic-int-l {
+			rockchip,pins = <1 RK_PB1 RK_FUNC_GPIO &pcfg_pull_up>;
+		};
+	};
+
+	sdio-pwrseq {
+		wifi_enable_h: wifi-enable-h {
+			rockchip,pins = <0 RK_PB2 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
+};
+
 &uart2 {
 	status = "okay";
+};
+
+&pwm0 {
+	status = "okay";
+};
+
+/* USB: 벤더는 dwc3 2개(OTG/host) + ehci/ohci 2쌍 */
+&usbdrd3_0 {
+	status = "okay";
+};
+
+&usbdrd_dwc3_0 {
+	status = "okay";
+	dr_mode = "otg";
+};
+
+&usbdrd3_1 {
+	status = "okay";
+};
+
+&usbdrd_dwc3_1 {
+	status = "okay";
+	dr_mode = "host";
+};
+
+&usb_host0_ehci {
+	status = "okay";
+};
+
+&usb_host0_ohci {
+	status = "okay";
+};
+
+&usb_host1_ehci {
+	status = "okay";
+};
+
+&usb_host1_ohci {
+	status = "okay";
+};
+
+&tsadc {
+	status = "okay";
+	rockchip,hw-tshut-mode = <1>;
+	rockchip,hw-tshut-polarity = <1>;
+};
+
+/*
+ * 디스플레이 (MIPI-DSI0)
+ *
+ * 벤더 DTB에는 lcd-compatible 노드가 "M13"→mipi_lcd_23, "M14"→mipi_lcd_24,
+ * "M15"→mipi_lcd_25 로 매핑하고, 부트로더가 보드 ID를 읽어 패널을 고른다.
+ * 즉 같은 이름의 기기에도 패널이 여러 가지다. 실기기에서 화면이 안 뜨면
+ * 아래 timing0 / dsi,lanes 를 다른 변형으로 바꿔야 한다(README 표 참고).
+ *
+ * 메인라인 커널에는 이 패널(벤더 init-sequence 방식) 드라이버가 없어서
+ * 기본은 disabled. 드라이버를 붙일 때 필요한 값은 전부 여기에 있다.
+ */
+&mipi_dsi {
+	status = "disabled";
+	clock-master;
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	panel: panel@0 {
+		compatible = "simple-panel-dsi";
+		reg = <0>;
+		backlight = <&backlight>;
+		reset-gpios = <&gpio3 RK_PD1 GPIO_ACTIVE_LOW>;
+		enable-gpios = <&gpio4 RK_PA1 GPIO_ACTIVE_HIGH>;
+		prepare-delay-ms = <20>;
+		reset-delay-ms = <20>;
+		init-delay-ms = <150>;
+		enable-delay-ms = <30>;
+		disable-delay-ms = <10>;
+		unprepare-delay-ms = <10>;
+		width-mm = <68>;
+		height-mm = <121>;
+		dsi,flags = <0xa03>;
+		dsi,format = <0>;
+		dsi,lanes = <3>; /* mipi_lcd_23 (M13). 1024x600 변형은 4 */
+		panel-init-sequence = [
+			05 78 01 11
+			05 14 01 29
+		];
+		/* 벤더 mipi_lcd_23 초기화 시퀀스 (참고용 원본):
+		 * 15 00 02 80 bb  15 00 02 81 bb ... 필요 시 드라이버에 맞춰 복원
+		 */
+
+		display-timings {
+			native-mode = <&timing0>;
+
+			timing0: timing0 {
+				clock-frequency = <60000000>;
+				hactive = <800>;
+				vactive = <1280>;
+				hback-porch = <20>;
+				hfront-porch = <40>;
+				hsync-len = <20>;
+				vback-porch = <16>;
+				vfront-porch = <30>;
+				vsync-len = <4>;
+				hsync-active = <0>;
+				vsync-active = <0>;
+				de-active = <0>;
+				pixelclk-active = <0>;
+			};
+		};
+
+		port {
+			panel_in_dsi: endpoint {
+				remote-endpoint = <&dsi_out_panel>;
+			};
+		};
+	};
+};
+
+&mipi_out {
+	dsi_out_panel: endpoint {
+		remote-endpoint = <&panel_in_dsi>;
+	};
 };

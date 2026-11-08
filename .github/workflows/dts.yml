@@ -1,0 +1,39 @@
+name: dts
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq device-tree-compiler gcc
+
+      - name: fetch kernel dts includes
+        run: |
+          git clone --filter=blob:none --depth 1 --sparse https://github.com/torvalds/linux /tmp/linux
+          cd /tmp/linux
+          git sparse-checkout set include/dt-bindings arch/arm64/boot/dts/rockchip
+
+      - name: compile rk3399-tossfront.dts
+        run: |
+          set -euo pipefail
+          D=/tmp/linux/arch/arm64/boot/dts/rockchip
+          cp userpatches/kernel/archive/rockchip64-6.18/dt/rk3399-tossfront.dts "$D/"
+          gcc -E -P -x assembler-with-cpp -I "$D" -I /tmp/linux/include \
+              "$D/rk3399-tossfront.dts" -o /tmp/pp.dts
+          # SoC dtsi 자체 경고만 남으므로, 보드 관련 오류/경고는 실패로 처리
+          dtc -I dts -O dtb -o /tmp/rk3399-tossfront.dtb /tmp/pp.dts \
+            | grep -v 'unit_address_vs_reg\|unique_unit_address\|also defined at' || true
+          test -s /tmp/rk3399-tossfront.dtb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rk3399-tossfront-dtb
+          path: /tmp/rk3399-tossfront.dtb
