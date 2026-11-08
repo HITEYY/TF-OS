@@ -1,0 +1,1 @@
+deb [signed-by=/usr/share/keyrings/tf-os.gpg] https://ota.example.com/tf-os trixie main

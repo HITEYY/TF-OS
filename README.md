@@ -14,7 +14,25 @@ userpatches/config/boards/tossfront.csc    보드 정의 (rockchip64, evb-rk3399
 userpatches/kernel/archive/rockchip64-6.18/dt/rk3399-tossfront.dts   보드 DTS (벤더 DTB 기반)
 tools/extract_dtb.py                       백업 이미지에서 벤더 DTB 추출/디컴파일 (중복 블롭 제거)
 tools/rk.sh                                모드 확인 / MaskROM 진입 / 전체 백업 / 플래시 / 복구
+tools/repo.sh                              OTA APT 저장소 서명키 생성 / 저장소(repo/) 빌드
+userpatches/customize-image.sh             이미지에 tf-os-app 설치 (overlay 를 .deb 으로 빌드)
+userpatches/overlay/tf-os-app/             터치 UI(Qt/QML, eglfs) + 시스템 데몬(OTA/설정/Wi-Fi/오디오) 패키지 소스
+tests/test_ota.py                          데몬 로직 점검
 ```
+
+## 터치 GUI / OTA
+- UI: `tf-ui.service` 가 `qml6 main.qml` 을 eglfs(KMS)로 전체화면 실행. 홈 / 업데이트 화면. 방향·터치 보정은 `/etc/tf-os/ui.env`.
+- OTA: `tf-ota.service`(127.0.0.1:8765, python 표준 라이브러리)가 tf-os 전용 APT 저장소만 갱신하고 `tf-os-app` 만 업그레이드. UI 가 호출. 적용은 재부팅 후. 커널/DTB 는 apt hold (Armbian 저장소 커널엔 tossfront DTB 없음).
+- 배포 절차
+  ```sh
+  tools/repo.sh keygen                          # 1회. 공개키가 이미지에 들어감
+  TFOS_OTA_URL=https://내서버/tf-os ./build.sh  # 이미지 빌드 (URL 은 기기의 /etc/tf-os/tfos.list 에서도 수정 가능)
+  # 새 버전: overlay/tf-os-app/DEBIAN/control Version 올림 → tools/repo.sh publish → repo/ 업로드
+  ```
+- 커널·부트로더·DTS 는 OTA 대상 아님 (재플래시).
+- Wi-Fi: 홈 → Wi-Fi. 검색/선택, 비밀번호(화상 키보드), 저장된 망(★) 재연결·끊기·잊기, 숨김 SSID, WPA-Enterprise(PEAP/TTLS + MSCHAPv2/PAP). NetworkManager(`nmcli`). 비밀번호는 stdin 또는 0600 키파일로만 다룸(argv 노출 없음). 미지원: EAP-TLS(인증서), 서버 인증서 검증(기업망은 CA 미검증), 고정 IP. 숨김/기업망 SSID 에 `;` 불가.
+- 하드웨어(홈 → 하드웨어): 카메라 미리보기(QtMultimedia, V4L2), IC 리더(PC/SC `pcscd`+`libccid`, `opensc-tool`), NFC(`libnfc`, PN532 등 지원 칩) 상태 표시. **표준 인터페이스로 보일 때만 동작** — 센서/리더 DTS 와 인터페이스(USB CCID 여부 등)는 벤더 DTB 확인 필요. 카드리더/프린터는 별도 보안 MCU(독자 프로토콜)면 지원 불가. 스피커: ALSA(`alsa-utils`) 볼륨 슬라이더 + 테스트음 (코덱 컨트롤 이름은 Speaker→Master→PCM 순으로 자동 탐색, 사운드 카드 DTS(I2S+코덱, 앰프 enable GPIO) 필요, 없으면 "없음" 표시). MST 는 리눅스 표준 인터페이스가 없어 미지원.
+- 최초 부팅: 터치 화면에 "처음 설정"(사용자·비밀번호·SSH 켜기, 화상 키보드)이 뜸. 완료 전엔 root 잠금 + SSH 꺼짐(Armbian 콘솔 first-login 비활성). 완료 후 SSH `PermitRootLogin no`, 사용자는 sudo 그룹. 설정 완료 표시: `/var/lib/tf-os/setup-done` (지우면 마법사 재실행 가능, 이미 만든 사용자는 그대로).
 
 ## 기기 진입 (실기기에서 확인한 절차)
 

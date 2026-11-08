@@ -1,0 +1,10 @@
+[Unit]
+Description=TF-OS OTA daemon (127.0.0.1:8765)
+After=network-online.target
+
+[Service]
+ExecStart=/usr/lib/tf-os/ota-daemon.py
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,27 @@
+[Unit]
+Description=TF-OS touch UI
+After=systemd-user-sessions.service tf-ota.service
+Conflicts=getty@tty1.service
+After=getty@tty1.service
+
+[Service]
+User=tfui
+SupplementaryGroups=video render input
+RuntimeDirectory=tf-ui
+RuntimeDirectoryMode=0700
+Environment=XDG_RUNTIME_DIR=/run/tf-ui
+Environment=QT_QPA_PLATFORM=eglfs
+Environment=QT_QPA_EGLFS_INTEGRATION=eglfs_kms
+Environment=QT_QPA_EGLFS_ALWAYS_SET_MODE=1
+Environment=QT_QUICK_CONTROLS_STYLE=Basic
+Environment=QT_IM_MODULE=qtvirtualkeyboard
+EnvironmentFile=-/etc/tf-os/ui.env
+ExecStart=/usr/bin/qml6 /usr/share/tf-os/ui/main.qml
+Restart=always
+RestartSec=3
+# 디스플레이 미구성 상태에서 무한 재시작 방지
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+[Install]
+WantedBy=multi-user.target

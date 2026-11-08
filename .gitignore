@@ -7,3 +7,6 @@
 *.img.xz
 *.bin
 __pycache__/
+
+repo/
+.gnupg/

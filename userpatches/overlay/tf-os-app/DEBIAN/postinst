@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+if [ "$1" = configure ]; then
+	id tfui >/dev/null 2>&1 || useradd -r -M -s /usr/sbin/nologin -G video,render,input tfui
+	systemctl daemon-reload || true
+	systemctl enable tf-ui.service tf-ota.service || true
+	# 업데이트 중 서비스 재시작 안 함(실행 중인 apt 보호). 새 버전은 재부팅 후 적용.
+	[ -n "$2" ] || systemctl start tf-ota.service || true
+fi
