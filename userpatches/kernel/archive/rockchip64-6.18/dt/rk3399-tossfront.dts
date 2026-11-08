@@ -440,6 +440,136 @@
 };
 
 /*
+ * 오디오: ES8316 (i2c1 0x10) ← I2S1, mclk = SCLK_I2S_8CH_OUT, 11.2896 MHz
+ * 벤더 DTB: spk-con-gpios = <gpio0 PB4>, es8316_reg33_34_spk/hp = 0xc0
+ * TF-OS 터치 UI의 "스피커" 페이지가 이 사운드 카드를 사용한다.
+ */
+&i2c1 {
+	es8316: codec@10 {
+		compatible = "everest,es8316";
+		reg = <0x10>;
+		clocks = <&cru SCLK_I2S_8CH_OUT>;
+		clock-names = "mclk";
+		#sound-dai-cells = <0>;
+		/* 벤더 전용: 내장 스피커 드라이버 제어 (메인라인 드라이버는 무시) */
+		spk-con-gpios = <&gpio0 RK_PB4 GPIO_ACTIVE_HIGH>;
+		status = "okay";
+	};
+};
+
+&i2s1 {
+	status = "okay";
+};
+
+/ {
+	es8316_sound: sound {
+		compatible = "simple-audio-card";
+		simple-audio-card,name = "Toss Front";
+		simple-audio-card,format = "i2s";
+		simple-audio-card,mclk-fs = <256>;
+		simple-audio-card,widgets =
+			"Microphone", "Mic Jack",
+			"Headphone", "Headphone Jack",
+			"Speaker", "Speaker";
+		simple-audio-card,routing =
+			"Mic Jack", "MICBIAS1",
+			"IN1P", "Mic Jack",
+			"Headphone Jack", "HPOL",
+			"Headphone Jack", "HPOR";
+
+		simple-audio-card,cpu {
+			sound-dai = <&i2s1>;
+		};
+
+		simple-audio-card,codec {
+			sound-dai = <&es8316>;
+		};
+	};
+};
+
+/*
+ * 카메라: OV5675 (i2c2 0x10) → MIPI DPHY RX0 → ISP0
+ * 벤더 DTB: dvdd/dovdd/avdd = gpio2 PA2/PA3/PA4, pwdn = gpio2 PB1,
+ *            reset = gpio2 PB2, xvclk = SCLK_CIF_OUT, 2 lane
+ * TF-OS "하드웨어" 페이지의 카메라 미리보기(V4L2)가 이 노드를 쓴다.
+ */
+/ {
+	cam_dvdd: regulator-cam-dvdd {
+		compatible = "regulator-fixed";
+		regulator-name = "cam_dvdd";
+		regulator-min-microvolt = <1200000>;
+		regulator-max-microvolt = <1200000>;
+		gpio = <&gpio2 RK_PA2 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		vin-supply = <&vcc3v3_sys>;
+	};
+
+	cam_dovdd: regulator-cam-dovdd {
+		compatible = "regulator-fixed";
+		regulator-name = "cam_dovdd";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		gpio = <&gpio2 RK_PA3 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		vin-supply = <&vcc3v3_sys>;
+	};
+
+	cam_avdd: regulator-cam-avdd {
+		compatible = "regulator-fixed";
+		regulator-name = "cam_avdd";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		gpio = <&gpio2 RK_PA4 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		vin-supply = <&vcc3v3_sys>;
+	};
+};
+
+&i2c2 {
+	status = "okay";
+
+	ov5675: camera@10 {
+		compatible = "ovti,ov5675";
+		reg = <0x10>;
+		clocks = <&cru SCLK_CIF_OUT>;
+		clock-names = "xvclk";
+		dvdd-supply = <&cam_dvdd>;
+		dovdd-supply = <&cam_dovdd>;
+		avdd-supply = <&cam_avdd>;
+		reset-gpios = <&gpio2 RK_PB2 GPIO_ACTIVE_LOW>;
+		powerdown-gpios = <&gpio2 RK_PB1 GPIO_ACTIVE_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cif_clkouta>;
+		status = "okay";
+
+		port {
+			ov5675_out: endpoint {
+				remote-endpoint = <&isp0_in>;
+				data-lanes = <1 2>;
+				link-frequencies = /bits/ 64 <450000000>;
+			};
+		};
+	};
+};
+
+&mipi_dphy_rx0 {
+	status = "okay";
+};
+
+&isp0 {
+	status = "okay";
+
+	ports {
+		port@0 {
+			isp0_in: endpoint {
+				remote-endpoint = <&ov5675_out>;
+				data-lanes = <1 2>;
+			};
+		};
+	};
+};
+
+/*
  * 디스플레이 (MIPI-DSI0)
  *
  * 벤더 DTB에는 lcd-compatible 노드가 "M13"→mipi_lcd_23, "M14"→mipi_lcd_24,

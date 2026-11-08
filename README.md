@@ -97,6 +97,23 @@ DTS 기본값은 `mipi_lcd_23`(800×1280, 3 lane)이다. 화면이 안 뜨면 �
 | mipi_lcd_16 | 1024×600 | 4 | 51.2 MHz | 160/160/10 | 23/12/1 |
 | mipi_lcd_21/22 | 1920×1080 | 4 | 160.9 MHz | 60/180/40 | 10/30/5 |
 
+## TF-OS 앱 ↔ DTS 매핑
+
+`userpatches/overlay/tf-os-app` 의 터치 UI가 쓰는 하드웨어와 DTS 상태:
+
+| 앱 기능 | 필요한 DTS | 상태 |
+|---|---|---|
+| 화면(qml eglfs/KMS) | `&mipi_dsi` + `backlight` | 타이밍/시퀀스 있음, **패널 드라이버 이식 필요** (`disabled`) |
+| 터치 입력 | `touchscreen@40` (GSL3673) | **silead 드라이버에 ID 없음** (`disabled`) |
+| 스피커 페이지 (ALSA) | `&i2s1` + `es8316@10` + `sound` | 작성 완료. `aplay -l` 에 `Toss Front` 로 나와야 정상 |
+| 카메라 미리보기 (V4L2) | `ov5675@10` → `isp0` + `mipi_dphy_rx0` | 작성 완료. `/dev/video*` 생성 여부로 확인 |
+| Wi-Fi | `&sdio0` + `sdio_pwrseq` | 작성 완료 (AP6354, `brcmfmac` 펌웨어 필요) |
+| IC 리더 (PC/SC) | — | 벤더 DTB에 노드 없음 → **USB CCID 여부 실기기 확인 필요** |
+| NFC | — | 벤더 DTB에 노드 없음 → USB/SPI 모듈 여부 확인 필요 |
+
+회전/터치 보정은 DTS가 아니라 `/etc/tf-os/ui.env`(`QT_QPA_EGLFS_ROTATION`, `QT_QPA_EVDEV_TOUCHSCREEN_PARAMETERS`)에서 한다.
+패널 방향이 세로(800×1280)라면 `QT_QPA_EGLFS_ROTATION=90` 부터 시도.
+
 ## 빌드
 
 ```sh
@@ -140,15 +157,19 @@ UART2(1500000 8N1) 시리얼 콘솔 연결을 강하게 권장.
 | USB (dwc3 ×2, ehci/ohci ×2) | 노드 작성, 미검증 |
 | 터치 (GSL3673) | 노드 작성했지만 **메인라인 silead 드라이버에 항목 없음** → disabled |
 | 디스플레이 | 타이밍/시퀀스 확보. 벤더 init-sequence 방식이라 **드라이버 이식 필요** → disabled |
-| 오디오(ES8316)·게이지(cw201x)·카메라 | 미작성 (벤더 DTB에 정보 있음) |
+| 오디오 (ES8316 + I2S1) | **작성 완료** — `Toss Front` 사운드 카드, mclk `SCLK_I2S_8CH_OUT`, spk-con `gpio0 PB4`. 실기기 미검증 |
+| 카메라 (OV5675) | **작성 완료** — i2c2 `0x10` → MIPI DPHY RX0 → ISP0(rkisp1), 2 lane, 벤더 레귤레이터/GPIO 그대로. 실기기 미검증 |
+| 배터리 게이지 (cw201x) | 미작성 (벤더 DTB 기준 i2c 연결, 노드 없음) |
 | CPU/GPU DVFS | 꺼짐 (OPP 미적용, U-Boot 클럭으로 동작) |
 | 카드리더·프린터 | 별도 보안 MCU, 지원 예정 없음 |
 
 ### 다음 작업 후보
 1. 실기기에서 eMMC/시리얼 부팅 확인 → 실패 시 U-Boot `BOOTCONFIG`/DDR 설정 점검
-2. 패널 드라이버: 벤더 init-sequence를 `panel-simple` 규약으로 옮기거나 Rockchip BSP 드라이버 이식
-3. 터치: silead 드라이버에 GSL3673 ID 추가
-4. ES8316 + I2S, cw201x 게이지 노드 추가
+2. **패널 드라이버**: 벤더 init-sequence를 `panel-simple` 규약으로 옮기거나 Rockchip BSP 드라이버 이식
+   — TF-OS 터치 UI가 뜨려면 이게 먼저다
+3. **터치**: silead 드라이버에 GSL3673 ID 추가(+ 벤더 펌웨어 blob 필요 여부 확인)
+4. 오디오/카메라 실기기 검증 (`aplay -l`, `v4l2-ctl --list-devices`)
+5. cw201x 게이지 노드
 
 ## 참고 자료
 - 기기 진입/백업: 디시 SFF 갤 가이드 #1·#2·#3, [PLF 계열 상세 가이드(gist)](https://gist.github.com/luftaquila/f15c2db7a4a81bde3f6d7ba9b983d71c)
