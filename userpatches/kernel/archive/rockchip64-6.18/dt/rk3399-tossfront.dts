@@ -405,7 +405,12 @@
 
 &usbdrd_dwc3_0 {
 	status = "okay";
-	dr_mode = "otg";
+	/*
+	 * 브링업용 USB 시리얼 콘솔(ttyGS0). 이 포트가 MaskROM/rockusb 에 쓰는
+	 * OTG 포트인데, UART 어댑터 없이 부팅 로그를 보려면 gadget(peripheral)로
+	 * 고정하는 편이 확실하다. 화면/콘솔 작업이 끝나면 "otg"로 되돌릴 것.
+	 */
+	dr_mode = "peripheral";
 };
 
 &usbdrd3_1 {
