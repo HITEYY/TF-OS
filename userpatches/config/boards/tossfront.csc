@@ -13,3 +13,8 @@ SRC_EXTLINUX="yes"
 SRC_CMDLINE="console=ttyS2,1500000 console=tty0"
 # 디스플레이는 DTS에서 disabled (패널 드라이버 미이식). 실제 화면이 필요하면
 # rk3399-tossfront.dts 의 &mipi_dsi status 를 okay 로 바꾸고 패널 타이밍을 맞출 것.
+
+# 브링업(2026-11-09): 기본 rkbin DDR blob(v1.25/933MHz)에서 LPDDR4 ch1 트레이닝 실패
+# (channel 1 training failed, TdiVW_total violate spec) → 낮은 주파수 blob으로 교체 시도.
+# rockusb 는 userpatches/u-boot/u-boot-rockchip64/0010-enable-rockusb.patch 로 활성화.
+DDR_BLOB="rk33/rk3399_ddr_800MHz_v1.27.bin"
